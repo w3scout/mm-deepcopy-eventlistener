@@ -73,8 +73,8 @@ class DeepCopyListener
 
         $environment->getDataProvider($newChildModel->getProviderName())->save($newChildModel);
 
-        $postCopyEvent = new PostDuplicateModelEvent($environment, $newChildModel, $childModel);
-        $eventDispatcher->dispatch($postCopyEvent, $postCopyEvent::NAME);
+        #$postCopyEvent = new PostDuplicateModelEvent($environment, $newChildModel, $childModel);
+        #$eventDispatcher->dispatch($postCopyEvent, $postCopyEvent::NAME);
 
         return ModelId::fromModel($newChildModel);
     }
