@@ -68,14 +68,11 @@ class DeepCopyListener
         $newChildModel->setProperty('pid', $newModelId->getId());
 
         $eventDispatcher = $environment->getEventDispatcher();
-        // Dispatch pre duplicate event.
         $preCopyEvent = new PreDuplicateModelEvent($environment, $newChildModel, $childModel);
         $eventDispatcher->dispatch($preCopyEvent, $preCopyEvent::NAME);
 
-        // Save the copy.
         $environment->getDataProvider($newChildModel->getProviderName())->save($newChildModel);
 
-        // Dispatch post duplicate event.
         $postCopyEvent = new PostDuplicateModelEvent($environment, $newChildModel, $childModel);
         $eventDispatcher->dispatch($postCopyEvent, $postCopyEvent::NAME);
 
