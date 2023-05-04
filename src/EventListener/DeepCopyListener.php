@@ -17,7 +17,6 @@ class DeepCopyListener
 {
     public function onDcGeneralModelPostDuplicate(PostDuplicateModelEvent $event)
     {
-        #dump($event);
         $environment = $event->getEnvironment();
 
         $sourceModel = $event->getSourceModel();
@@ -27,17 +26,11 @@ class DeepCopyListener
         $newModel = $this->renameModel($environment, $sourceModel, $newModel);
         $newModelId = ModelId::fromModel($newModel);
 
-        #dump($sourceModel);
-        #dump($newModel);
-
         $this->deepCopy($environment, $sourceModelId, $newModelId);
     }
 
     private function deepCopy(EnvironmentInterface $environment, ModelIdInterface $sourceModelId, ModelIdInterface $newModelId)
     {
-        #dump($sourceModelId);
-        #dump($newModelId);
-
         $relationships = $environment->getDataDefinition()->getDefinition('model-relationships');
         $childConditions = $relationships->getChildConditions($sourceModelId->getDataProviderName());
 
