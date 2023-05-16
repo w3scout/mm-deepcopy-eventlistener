@@ -3,11 +3,14 @@
 
 namespace App\EventListener;
 
-use ContaoCommunityAlliance\DcGeneral\Data\ModelId;
-use ContaoCommunityAlliance\DcGeneral\Data\ModelIdInterface;
+use ContaoCommunityAlliance\DcGeneral\Data\DataProviderInterface;
+use ContaoCommunityAlliance\DcGeneral\DataDefinition\Definition\ModelRelationshipDefinitionInterface;
+use ContaoCommunityAlliance\DcGeneral\DataDefinition\ModelRelationship\ParentChildConditionInterface;
+use ContaoCommunityAlliance\DcGeneral\Data\ModelInterface;
 use ContaoCommunityAlliance\DcGeneral\EnvironmentInterface;
 use ContaoCommunityAlliance\DcGeneral\Event\PostDuplicateModelEvent;
 use ContaoCommunityAlliance\DcGeneral\Event\PreDuplicateModelEvent;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Terminal42\ServiceAnnotationBundle\Annotation\ServiceTag;
 
 /**
@@ -15,76 +18,125 @@ use Terminal42\ServiceAnnotationBundle\Annotation\ServiceTag;
  */
 class DeepCopyListener
 {
-    public function onDcGeneralModelPostDuplicate(PostDuplicateModelEvent $event)
+    /**
+     * The deep copy listener.
+     *
+     * @param PostDuplicateModelEvent $event
+     *
+     * @return void
+     */
+    public function onDcGeneralModelPostDuplicate(PostDuplicateModelEvent $event): void
     {
         $environment = $event->getEnvironment();
-
         $sourceModel = $event->getSourceModel();
-        $sourceModelId = ModelId::fromModel($sourceModel);
 
         $newModel = $event->getModel();
-        $newModel = $this->renameModel($environment, $sourceModel, $newModel);
-        $newModelId = ModelId::fromModel($newModel);
+        $this->renameModel($environment, $sourceModel, $newModel);
 
-        $this->deepCopy($environment, $sourceModelId, $newModelId);
+        $this->deepCopy($environment, $sourceModel, $newModel);
     }
 
-    private function deepCopy(EnvironmentInterface $environment, ModelIdInterface $sourceModelId, ModelIdInterface $newModelId)
-    {
+    /**
+     * Generate copy of all child models.
+     *
+     * @param EnvironmentInterface $environment
+     * @param ModelInterface       $sourceModel
+     * @param ModelInterface       $newModel
+     *
+     * @return void
+     */
+    private function deepCopy(
+        EnvironmentInterface $environment,
+        ModelInterface $sourceModel,
+        ModelInterface $newModel
+    ): void {
         $relationships = $environment->getDataDefinition()->getDefinition('model-relationships');
-        $childConditions = $relationships->getChildConditions($sourceModelId->getDataProviderName());
+        assert($relationships instanceof ModelRelationshipDefinitionInterface);
+        $childConditions = $relationships->getChildConditions($sourceModel->getProviderName());
 
-        if(empty($childConditions)) return;
+        if (empty($childConditions)) {
+            return;
+        }
 
+        $dispatcher = $environment->getEventDispatcher();
         foreach ($childConditions as $childCondition) {
-            $dataProvider       = $environment->getDataProvider($sourceModelId->getDataProviderName());
-            $model              = $dataProvider->fetch(
-                $dataProvider->getEmptyConfig()->setId($sourceModelId->getId())
-            );
-            $childDataProvider  = $environment->getDataProvider($childCondition->getDestinationName());
-            $filters            = $childCondition->getFilter($model);
-            $childModels        = $childDataProvider->fetchAll($dataProvider->getEmptyConfig()->setFilter($filters));
+            $childProvider = $environment->getDataProvider($childCondition->getDestinationName());
+            $filters       = $childCondition->getFilter($sourceModel);
+            $childModels   = $childProvider->fetchAll($childProvider->getEmptyConfig()->setFilter($filters));
 
             if ($childModels->count() < 1) {
                 continue;
             }
 
             foreach ($childModels as $childModel) {
-                $childModelId = ModelId::fromModel($childModel);
-                $clonedChildModelId = $this->copy($environment, $childModelId, $newModelId);
+                $clonedChildModel = $this->copy(
+                    $environment,
+                    $childProvider,
+                    $childModel,
+                    $newModel,
+                    $childCondition,
+                    $dispatcher
+                );
 
-                $this->deepCopy($environment, $childModelId, $clonedChildModelId);
+                $this->deepCopy($environment, $childModel, $clonedChildModel);
             }
         }
     }
 
-    private function copy(EnvironmentInterface $environment, ModelIdInterface $childModelId, ModelIdInterface $newModelId)
-    {
-        $dataProvider = $environment->getDataProvider($childModelId->getDataProviderName());
-        $childModel   = $dataProvider->fetch($dataProvider->getEmptyConfig()->setId($childModelId->getId()));
-
+    /**
+     * Copy model.
+     *
+     * @param EnvironmentInterface          $environment
+     * @param DataProviderInterface         $childDataProvider
+     * @param ModelInterface                $childModel
+     * @param ModelInterface                $parentModel
+     * @param ParentChildConditionInterface $condition
+     * @param EventDispatcherInterface      $dispatcher
+     *
+     * @return ModelInterface
+     */
+    private function copy(
+        EnvironmentInterface $environment,
+        DataProviderInterface $childDataProvider,
+        ModelInterface $childModel,
+        ModelInterface $parentModel,
+        ParentChildConditionInterface $condition,
+        EventDispatcherInterface $dispatcher
+    ): ModelInterface {
         $newChildModel = $environment->getController()->createClonedModel($childModel);
-        $newChildModel->setProperty('pid', $newModelId->getId());
+        $condition->applyTo($parentModel, $newChildModel);
 
-        $eventDispatcher = $environment->getEventDispatcher();
         $preCopyEvent = new PreDuplicateModelEvent($environment, $newChildModel, $childModel);
-        $eventDispatcher->dispatch($preCopyEvent, $preCopyEvent::NAME);
+        $dispatcher->dispatch($preCopyEvent, $preCopyEvent::NAME);
 
-        $environment->getDataProvider($newChildModel->getProviderName())->save($newChildModel);
+        $childDataProvider->save($newChildModel);
 
-        #$postCopyEvent = new PostDuplicateModelEvent($environment, $newChildModel, $childModel);
-        #$eventDispatcher->dispatch($postCopyEvent, $postCopyEvent::NAME);
+        $postCopyEvent = new PostDuplicateModelEvent($environment, $newChildModel, $childModel);
+        $dispatcher->dispatch($postCopyEvent, $postCopyEvent::NAME);
 
-        return ModelId::fromModel($newChildModel);
+        return $newChildModel;
     }
 
-    private function renameModel($environment, $sourceModel, $newModel)
-    {
-        if(null !== $sourceModel->getProperty('titel')) {
-            $newModel->setProperty('titel', sprintf('%s (%s)', $sourceModel->getProperty('titel'), 'Kopie'));
+    /**
+     * Add postfix at title attribute.
+     *
+     * @param EnvironmentInterface $environment
+     * @param ModelInterface       $sourceModel
+     * @param ModelInterface       $newModel
+     *
+     * @return void
+     */
+    private function renameModel(
+        EnvironmentInterface $environment,
+        ModelInterface $sourceModel,
+        ModelInterface $newModel
+    ): void {
+        if (null !== $sourceModel->getProperty('titel')) {
+            $newModel->setProperty(
+                'titel',
+                sprintf('%s (%s)', $sourceModel->getProperty('titel'), 'Kopie')
+            );
             $environment->getDataProvider($newModel->getProviderName())->save($newModel);
         }
-
-        return $newModel;
     }
 }
